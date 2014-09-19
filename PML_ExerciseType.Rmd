@@ -1,0 +1,158 @@
+---
+title: "Exercise Type Prediction"
+author: "Jason Ives"
+date: "Friday, September 12, 2014"
+output: html_document
+---
+Original data source: http://groupware.les.inf.puc-rio.br/har<br><br>
+
+####Background
+This is the course project for the September 2014 Practical Machine Learning course through Coursera.  The instructor is Jeff Leek, with the Johns Hopkins Bloomberg School of Public Health.
+
+https://class.coursera.org/predmachlearn-005
+
+####Synopsis
+A random forest model proves to be an excellent predictor for this data, predicting the test data with an accuracy of 99.5% and an out of sample error of only .68%.
+
+```{r getData, echo = FALSE}
+#https://pages.github.com/ - Publishing report
+suppressMessages(library(caret))
+suppressMessages(library(rpart))
+suppressMessages(library(randomForest))
+set.seed(5279)
+
+setwd("~/Data Science Specialization/Practical Machine Learning")
+data <- read.csv("pml-training.csv", na.strings = c("", "NA")) 
+```
+
+####Exploratory Analysis and Data Cleaning
+If we take a quick look at the few rows of our data, we can see a couple of issues.
+
++    There are several variables that have only NA or blank values.
++    The first few variables do not look like useful predictive variables.
+
+We need to have a better understanding of those variables with a large number of NAs before we can decide what to do with them, so we can create a data frame to examine the classes and NA status of each variable in the data set.
+```{r explore, echo = TRUE}
+classes <- vector()
+colnums <- vector()
+na_num <- vector()
+
+##create column names vector
+names <- names(data)
+
+##create column number, class, and # of NAs vectors
+for(i in 1:ncol(data)) {
+     colnums[i] <- i
+     classes[i] <- class(data[,i])
+     na_num[i] <- sum(is.na(data[,i]))
+}
+
+##create data frame of column details
+col_details <- data.frame(names, colnums, classes, na_num)  
+
+##create percent NAs column in column details
+col_details$pct_na <- col_details$na_num / nrow(data)
+
+numNa <- levels(as.factor(col_details$pct_na))
+highNa <- 100 * (max(col_details$pct_na))
+```
+
+We can see that the variables in the data set fall into two groups.
+```{r NAnum, echo = FALSE}
+print(data.frame(Pct.of.NA = numNa))
+```
+Those with no NA values, and those with `r highNa`% NA values.  With such a high number of NAs in those variables, the best course of action is to exclude them from our analysis.
+
+We will also remove the first 7 columns which do not appear to contain useful measurement data.
+```{r clean, echo = TRUE}
+##create table of columns with percent NAs <= 50%
+col_details <- col_details[col_details$pct_na <= .50,]
+
+##remove high NA columns from data
+data <- data[,col_details$colnums]
+
+##remove non-measurement columns
+data <- data[,-1:-7]
+```
+
+Once this cleaning is done, we can separate our data into training, validation, and test data sets.
+```{r split, echo = TRUE}
+##split cleaned data in to train/validation/test sets; 60/20/20
+trainValRows <- createDataPartition(y=data$classe, p = .80, list = FALSE)
+trainVal <- data[trainValRows,]
+test <- data[-trainValRows,]
+
+trainRows <- createDataPartition(y=trainVal$classe, p = .75, list = FALSE)
+train <- trainVal[trainRows,]
+val <- trainVal[-trainRows,]
+```
+
+Because our outcome is a factor with more than 2 levels, we know that a linear model is not the right tool for this job.  Instead we can look at models that are a better fit for the data.  First let's look at a classification tree prediction model.<br><br>
+
+####Classification Tree
+```{r cart, echo = TRUE}
+cartModel <- train(classe ~ ., method = "rpart", data = train)
+
+cartTrain <- predict(cartModel, newdata = train)
+cartCm <- confusionMatrix(train$classe, cartTrain)
+cartAcc <- 100 * cartCm$overall[1]
+```
+
+This model yields an accuracy of only `r cartAcc`%, which is not sufficient for our needs.
+
+Let's build on the idea of classification trees, by instead looking at a random forest model.<br><br>
+
+####Random Forest
+```{r randForest, echo = TRUE}
+rfModel <- randomForest(classe ~ ., data = train)
+
+
+rfTrain <- predict(rfModel, newdata = train)
+rfCm <- confusionMatrix(train$classe, rfTrain)
+rfAcc <- 100 * rfCm$overall[1]
+
+rfVal <- predict(rfModel, newdata = val)
+rfVCm <- confusionMatrix(val$classe, rfVal)
+rfVAcc <- 100 * rfVCm$overall[1]
+rfOos <- (rfAcc - rfVAcc)
+```
+
+Against the training data, this model yields an accuracy of `r rfAcc`%, much better than the previous model.  This raises concerns of overfitting, but if we look at the same model used to fit the validation data set, we find an accuracy of `r rfVAcc`%.
+
+Due to the design of the random forest model, the OOB error returned by the model (.68%) is the unbiased out of sample error rate.
+
+We can confirm this by running our model against the validation data set.  When we do this, we find an estimated out of sample error of `r rfOos`%.
+
+Finally, if we are settled on this model we can then predict our test data based the model. 
+```{r rfTest, echo = TRUE}
+rfTest <- predict(rfModel, newdata = test)
+rfTestCm <- confusionMatrix(test$classe, rfTest)
+print(rfTestCm$table)
+print(rfTestCm$overall)
+```
+The results confirm that our random forest prediction model for activity type is quite strong.  To better understand and interpret a model like this, it may be of value to look at the variable importance.
+```{r varImp, echo = TRUE}
+varImpPlot(rfModel, main = "Variable Importance")
+```
+
+Looking at this we can see the importance of "roll_belt" and "yaw_belt" to our model, although all variables play a significant part.
+
+___
+
+Predicting the assignment test data for submission
+```{r testSubmit, echo = TRUE}
+grading <- read.csv("pml-testing.csv", na.strings = c("", "NA"))
+grading <- grading[,col_details$colnums]
+grading <- grading[,-1:-7]
+answers <- as.vector(predict(rfModel, newdata = grading))
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
